@@ -27,17 +27,29 @@ def cpu():
     return 'Unknown CPU'
 
 
+mb_long_vensors = {
+    'ASUSTeK COMPUTER INC.': 'ASUS',
+}
+
+
 def motherboard():
     board = '/sys/class/dmi/id/board_'
+    vendor = cat(board + 'vendor')
+    vendor = mb_long_vensors.get(vendor, vendor)
+    name = cat(board + 'name')
+    version = cat(board + 'version')
     yield '{} {} ({})'.format(
-        cat(board + 'vendor'),
-        cat(board + 'name'),
-        cat(board + 'version'),
+        vendor,
+        name,
+        version,
     )
-    yield '{} {}'.format(
-        cat('/sys/class/dmi/id/sys_vendor'),
-        cat('/sys/class/dmi/id/product_name'),
-    )
+    sysvendor = cat('/sys/class/dmi/id/sys_vendor')
+    product = cat('/sys/class/dmi/id/product_name')
+    if (
+        (sysvendor.lower() != 'system manufacturer' and sysvendor != vendor)
+        or (product.lower() != 'system product name' and product not in name)
+    ):
+        yield '{} {}'.format(sysvendor, product)
 
 
 def hsize(number):
@@ -59,6 +71,9 @@ def msize(size):
 
 
 def memory():
+    if os.getuid() != 0:
+        yield 'Memory information requires root'
+        return
     o = subprocess.check_output(['dmidecode', '-t', '17'], universal_newlines=True)
     m = []
     for line in o.splitlines():
@@ -113,7 +128,7 @@ def gpu():
                 yield name
 
 
-def info(name, *values):
+def info_default(name, *values):
     print('{}:'.format(name))
     od = OrderedDict()
     for value in values:
@@ -128,9 +143,30 @@ def info(name, *values):
             print('\t[{}x] {}'.format(n, value))
 
 
-info('CPU', cpu())
-info('Motherboard', *motherboard())
-if os.getuid() == 0:
+def info_csv(name, *values):
+    print('; '.join(values), end=',')
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(allow_abbrev=False)
+    parser.add_argument('--csv', action='store_true')
+    args = parser.parse_args()
+
+    if args.csv:
+        info = info_csv
+    else:
+        info = info_default
+
+    info('CPU', cpu())
+    info('Motherboard', *motherboard())
     info('Memory', *memory())
-info('Storage', *blockdev())
-info('GPU', *gpu())
+    info('GPU', *gpu())
+    info('Storage', *blockdev())
+
+    if args.csv:
+        print()
+
+
+if __name__ == '__main__':
+    main()
