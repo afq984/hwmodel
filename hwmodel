@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+
+
+import re
+import os
+import subprocess
+from collections import OrderedDict
+
+
+def cat(filename):
+    with open(filename) as file:
+        return file.read().strip()
+
+
+def cpu():
+    o = subprocess.check_output(['lscpu'], universal_newlines=True)
+    for attr in o.splitlines():
+        field, _, data = attr.partition(':')
+        data = data.strip()
+        if 'Model name' == field:
+            return re.sub(
+                r'\(TM\)|\(R\)',
+                '',
+                data,
+                re.IGNORECASE
+            ).replace('CPU @', '@')
+    return 'Unknown CPU'
+
+
+def motherboard():
+    board = '/sys/class/dmi/id/board_'
+    yield '{} {} ({})'.format(
+        cat(board + 'vendor'),
+        cat(board + 'name'),
+        cat(board + 'version'),
+    )
+    yield '{} {}'.format(
+        cat('/sys/class/dmi/id/sys_vendor'),
+        cat('/sys/class/dmi/id/product_name'),
+    )
+
+
+def hsize(number):
+    for unit in 'KMGT':
+        number /= 1000
+        if number < 1000:
+            break
+    return '{:.3g}{}B'.format(number, unit)
+
+
+def msize(size):
+    assert size.endswith(' MB')
+    size = int(size[:-3])
+    for unit in 'MGT':
+        if size < 1024:
+            break
+        size //= 1024
+    return '{}{}B'.format(size, unit)
+
+
+def memory():
+    o = subprocess.check_output(['dmidecode', '-t', '17'], universal_newlines=True)
+    m = []
+    for line in o.splitlines():
+        if line.startswith('Handle '):
+            data = {}
+            m.append(data)
+        elif line.startswith('\t'):
+            k, _, v = line.partition(': ')
+            data[k[1:]] = v.strip()
+    for device in m:
+        if device['Size'] == 'No Module Installed':
+            continue
+        yield ' '.join((
+            msize(device['Size']),
+            device['Manufacturer'],
+            device['Type'],
+            device['Speed'].replace('MT/s', 'MHz').replace(' ', ''),
+            device['Part Number'],
+        ))
+
+
+def blockdev():
+    o = subprocess.check_output(('lsblk', '-ndbo', 'size,model'), universal_newlines=True)
+    for dev in o.splitlines():
+        size, model = dev.split(None, 1)
+        yield '{} {}'.format(
+            hsize(int(size)),
+            model.strip(),
+        )
+
+
+def lspci():
+    o = subprocess.check_output(['lspci', '-vmm'], universal_newlines=True)
+    data = {}
+    for l in o.splitlines():
+        if l == '':
+            yield data
+            data = {}
+            continue
+        k, v = l.split(':', 1)
+        data[k] = v.strip()
+
+
+def gpu():
+    for dev in lspci():
+        if dev['Class'] in ('VGA compatible controller', '3D controller'):
+            name = dev['Device']
+            match = re.search(r'\[(.+)\]', name)
+            if match is not None:
+                yield match.group(1)
+            else:
+                yield name
+
+
+def info(name, *values):
+    print('{}:'.format(name))
+    od = OrderedDict()
+    for value in values:
+        if value not in od:
+            od[value] = 1
+        else:
+            od[value] += 1
+    for value, n in od.items():
+        if n == 1:
+            print('\t' + value)
+        else:
+            print('\t[{}x] {}'.format(n, value))
+
+
+info('CPU', cpu())
+info('Motherboard', *motherboard())
+if os.getuid() == 0:
+    info('Memory', *memory())
+info('Storage', *blockdev())
+info('GPU', *gpu())
